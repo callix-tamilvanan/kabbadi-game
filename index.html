@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Kabaddi Raid</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: radial-gradient(circle at 50% 0%, #101c28 0%, #070b10 70%);
+    color: #e8eef5;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  .app { width: 100%; max-width: 900px; }
+
+  .hud {
+    display: flex; gap: 10px; align-items: center;
+    margin-bottom: 10px; flex-wrap: wrap;
+  }
+  .pill {
+    background: #131c26; border: 1px solid #24313f; border-radius: 10px;
+    padding: 8px 14px; font-size: 12px; letter-spacing: .1em;
+    color: #8ea3b8; display: flex; align-items: baseline; gap: 8px;
+  }
+  .pill b { color: #fff; font-size: 17px; letter-spacing: 0; }
+
+  .breathWrap { flex: 1; min-width: 150px; display: flex; align-items: center; gap: 8px; }
+  .breathLabel { font-size: 10px; letter-spacing: .14em; color: #8ea3b8; }
+  .breathBar {
+    flex: 1; height: 12px; background: #131c26;
+    border: 1px solid #24313f; border-radius: 99px; overflow: hidden;
+  }
+  #breathFill {
+    height: 100%; width: 100%; background: #22c55e;
+    transition: width .08s linear, background .2s;
+  }
+
+  .stage {
+    position: relative; border-radius: 14px; overflow: hidden;
+    border: 1px solid #24313f;
+    box-shadow: 0 24px 70px rgba(0,0,0,.65);
+  }
+  canvas { display: block; width: 100%; height: auto; touch-action: none; }
+
+  #tagBtn {
+    position: absolute; right: 14px; bottom: 14px; z-index: 1;
+    width: 74px; height: 74px; border-radius: 50%;
+    border: 2px solid rgba(125,211,252,.5);
+    background: rgba(56,189,248,.18);
+    color: #bae6fd; font: 700 13px system-ui; letter-spacing: .1em;
+    display: none; cursor: pointer;
+  }
+  @media (hover: none) and (pointer: coarse) {
+    #tagBtn { display: block; }
+  }
+
+  .overlay {
+    position: absolute; inset: 0; z-index: 2;
+    background: rgba(6, 10, 14, .9);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center; padding: 24px; gap: 10px;
+    opacity: 0; pointer-events: none;
+    transition: opacity .25s ease;
+    backdrop-filter: blur(3px);
+  }
+  .overlay.show { opacity: 1; pointer-events: auto; }
+  .overlay h1 {
+    margin: 0; font-size: clamp(28px, 6vw, 46px);
+    letter-spacing: .12em; font-weight: 800;
+    background: linear-gradient(90deg, #38bdf8, #f472b6);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .overlay p {
+    margin: 0; max-width: 480px; color: #a8bccf;
+    font-size: 14px; line-height: 1.6;
+  }
+  .overlay p.small { font-size: 12px; color: #6b8298; }
+  .overlay p.big { font-size: 18px; color: #cbd9e6; }
+  .overlay b { color: #fff; }
+  .overlay button {
+    margin-top: 8px; padding: 14px 34px; border-radius: 12px;
+    border: none; cursor: pointer;
+    background: linear-gradient(135deg, #38bdf8, #6366f1);
+    color: #04121e; font: 800 15px system-ui; letter-spacing: .12em;
+    box-shadow: 0 10px 30px rgba(56,189,248,.35);
+    transition: transform .12s ease;
+  }
+  .overlay button:hover { transform: translateY(-2px); }
+  .overlay button:active { transform: translateY(0); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="hud">
+    <div class="pill">SCORE <b id="score">0</b></div>
+    <div class="pill">LIVES <b id="lives">3</b></div>
+    <div class="breathWrap">
+      <span class="breathLabel">BREATH</span>
+      <div class="breathBar"><div id="breathFill"></div></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="game"></canvas>
+    <button id="tagBtn">TAG</button>
+    <div id="overlay" class="overlay"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ────────────────────────────── Setup ──────────────────────────────
+  const cvs = document.getElementById('game');
+  const ctx = cvs.getContext('2d');
+  const W = 900, H = 520;
+  cvs.width = W; cvs.height = H;
+
+  const TAU   = Math.PI * 2;
+  const MID   = W / 2;
+  const PAD   = 26;
+  const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+
+  // Tunables — tweak these to change difficulty
+  const RAID_TIME   = 10;    // seconds of breath per raid
+  const P_SPEED     = 252;   // player speed px/s
+  const SLAP_RANGE  = 52;    // tag reach
+  const SLAP_CD     = 0.45;  // seconds between tags
+  const DEF_MIN_X   = MID + 45; // defenders never come closer to the midline
+  const LIVES_START = 3;
+
+  const scoreEl    = document.getElementById('score');
+  const livesEl    = document.getElementById('lives');
+  const breathFill = document.getElementById('breathFill');
+  const overlay    = document.getElementById('overlay');
+  const tagBtn     = document.getElementById('tagBtn');
+
+  // ────────────────────────────── State ──────────────────────────────
+  const keys    = {};
+  const pointer = { active: false, x: 0, y: 0 };
+
+  let particles = [];  // expanding rings
+  let floaters  = [];  // floating score text
+  let defenders = [];
+
+  const G = {
+    phase: 'idle',      // idle | play | caught | over
+    score: 0,
+    lives: LIVES_START,
+    breath: 1,
+    raidActive: false,
+    tags: 0,
+    timer: 0,
+    flash: 0,
+  };
+
+  const player = { x: MID * 0.38, y: H / 2, r: 15, cd: 0 };
+
+  const SPOTS = [[620,120],[770,250],[620,400],[815,150],[815,380]];
+  const newDefenders = () => SPOTS.map(([x, y], i) => ({
+    x, y, r: 15, alive: true, speed: 150 + i * 5
+  }));
+
+  // ────────────────────────────── Audio ──────────────────────────────
+  let actx = null;
+  function initAudio() {
+    if (!actx) {
+      try { actx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+    } else if (actx.state === 'suspended') {
+      actx.resume();
+    }
+  }
+  function beep(freq, dur, type = 'square', vol = 0.05) {
+    if (!actx) return;
+    try {
+      const o = actx.createOscillator();
+      const g = actx.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, actx.currentTime);
+      g.gain.setValueAtTime(vol, actx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + dur);
+      o.connect(g).connect(actx.destination);
+      o.start();
+      o.stop(actx.currentTime + dur);
+    } catch (e) {}
+  }
+
+  // ────────────────────────────── Helpers ────────────────────────────
+  const addFloat = (text, x, y, color) =>
+    floaters.push({ text, x, y, color, life: 1.2 });
+
+  function caught() {
+    G.phase = 'caught';
+    G.timer = 1.2;
+    G.lives--;
+    G.raidActive = false;
+    G.flash = 1;
+    beep(110, 0.32, 'sawtooth', 0.08);
+  }
+
+  function resetRaid(success) {
+    if (success) {
+      const bonus = G.tags * 2;
+      G.score += bonus;
+      if (bonus > 0) addFloat('+' + bonus + ' BONUS', player.x, player.y - 40, '#4ade80');
+      beep(660, 0.12, 'triangle', 0.05);
+    }
+    G.raidActive = false;
+    G.breath = 1;
+    G.tags = 0;
+    G.timer = 0;
+    player.x = MID * 0.38;
+    player.y = H / 2;
+    player.cd = 0;
+    defenders = newDefenders();
+    particles = [];
+    G.phase = 'play';
+  }
+
+  function slap() {
+    if (G.phase !== 'play' || player.cd > 0 || !G.raidActive) return;
+    player.cd = SLAP_CD;
+    particles.push({ x: player.x, y: player.y, r: player.r, life: 1, big: false });
+
+    let hits = 0;
+    for (const d of defenders) {
+      if (!d.alive) continue;
+      if (Math.hypot(player.x - d.x, player.y - d.y) <= SLAP_RANGE) {
+        d.alive = false;
+        hits++;
+        G.tags++;
+        G.score++;
+        particles.push({ x: d.x, y: d.y, r: d.r, life: 1, big: true });
+      }
+    }
+
+    if (hits) {
+      beep(780, 0.08, 'square', 0.05);
+      addFloat('+' + hits, player.x, player.y - 26, '#7dd3fc');
+      if (defenders.every(d => !d.alive)) {
+        G.score += 5;
+        addFloat('ALL OUT  +5', player.x, player.y - 56, '#fbbf24');
+        beep(980, 0.18, 'triangle', 0.06);
+      }
+    } else {
+      beep(300, 0.05, 'sine', 0.03);
+    }
+  }
+
+  // ────────────────────────────── Update ─────────────────────────────
+  function update(dt) {
+    // effects always animate
+    for (const p of particles) { p.r += dt * 95; p.life -= dt * 2.6; }
+    particles = particles.filter(p => p.life > 0);
+    for (const f of floaters) { f.y -= dt * 42; f.life -= dt * 0.85; }
+    floaters = floaters.filter(f => f.life > 0);
+
+    if (G.phase === 'idle' || G.phase === 'over') return;
+
+    G.flash = Math.max(0, G.flash - dt * 2.5);
+
+    if (G.phase === 'caught') {
+      G.timer -= dt;
+      if (G.timer <= 0) {
+        if (G.lives <= 0) { G.phase = 'over'; showGameOver(); }
+        else resetRaid(false);
+      }
+      return;
+    }
+
+    // ── player movement ──
+    let dx = 0, dy = 0;
+    if (keys['arrowleft']  || keys['a']) dx--;
+    if (keys['arrowright'] || keys['d']) dx++;
+    if (keys['arrowup']    || keys['w']) dy--;
+    if (keys['arrowdown']  || keys['s']) dy++;
+
+    if (!dx && !dy && pointer.active) {
+      const px = pointer.x - player.x;
+      const py = pointer.y - player.y;
+      const d = Math.hypot(px, py);
+      if (d > 10) { dx = px / d; dy = py / d; }
+    }
+
+    const mag = Math.hypot(dx, dy);
+    if (mag > 0) {
+      player.x += (dx / mag) * P_SPEED * dt;
+      player.y += (dy / mag) * P_SPEED * dt;
+    }
+    player.x = clamp(player.x, PAD + player.r, W - PAD - player.r);
+    player.y = clamp(player.y, PAD + player.r, H - PAD - player.r);
+    player.cd = Math.max(0, player.cd - dt);
+
+    // ── raid logic ──
+    if (!G.raidActive) {
+      if (player.x > MID) {
+        G.raidActive = true;
+        G.breath = 1;
+        G.tags = 0;
+        beep(520, 0.09, 'triangle', 0.04);
+      }
+    } else {
+      G.breath -= dt / RAID_TIME;
+      if (G.breath <= 0) { G.breath = 0; caught(); return; }
+      if (player.x < MID) { resetRaid(true); return; }
+    }
+
+    // ── defenders ──
+    const boost = G.raidActive ? (1 - G.breath) * 95 : 0;
+
+    for (const d of defenders) {
+      if (!d.alive) continue;
+
+      if (G.raidActive) {
+        const ddx = player.x - d.x;
+        const ddy = player.y - d.y;
+        const dist = Math.hypot(ddx, ddy) || 1;
+        const sp = d.speed + boost;
+        d.x += (ddx / dist) * sp * dt;
+        d.y += (ddy / dist) * sp * dt;
+      }
+
+      d.x = clamp(d.x, DEF_MIN_X, W - PAD - d.r);
+      d.y = clamp(d.y, PAD + d.r, H - PAD - d.r);
+
+      if (Math.hypot(player.x - d.x, player.y - d.y) < player.r + d.r - 2) {
+        caught();
+        return;
+      }
+    }
+  }
+
+  // ────────────────────────────── Render ─────────────────────────────
+  function render() {
+    // halves
+    ctx.fillStyle = '#123326';
+    ctx.fillRect(0, 0, MID, H);
+    ctx.fillStyle = '#3a1520';
+    ctx.fillRect(MID, 0, MID, H);
+
+    // faint labels
+    ctx.save();
+    ctx.globalAlpha = 0.07;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '800 46px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('YOUR HALF', MID / 2, H / 2);
+    ctx.fillText('THEIR HALF', MID + MID / 2, H / 2);
+    ctx.restore();
+
+    // boundary
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(PAD, PAD, W - PAD * 2, H - PAD * 2);
+
+    // midline
+    ctx.setLineDash([14, 12]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(MID, PAD);
+    ctx.lineTo(MID, H - PAD);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // slap rings
+    for (const p of particles) {
+      ctx.strokeStyle = p.big
+        ? 'rgba(255,120,120,' + p.life + ')'
+        : 'rgba(125,211,252,' + p.life + ')';
+      ctx.lineWidth = p.big ? 4 : 3;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, TAU);
+      ctx.stroke();
+    }
+
+    // defenders
+    for (const d of defenders) {
+      if (!d.alive) continue;
+      ctx.save();
+      ctx.shadowColor = '#ff4d4d';
+      ctx.shadowBlur = 16;
+      ctx.fillStyle = '#ff4d4d';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r * 0.42, 0, TAU);
+      ctx.fill();
+    }
+
+    // player
+    ctx.save();
+    ctx.shadowColor = '#38bdf8';
+    ctx.shadowBlur = 22;
+    ctx.fillStyle = '#38bdf8';
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r, 0, TAU);
+    ctx.stroke();
+
+    // tag-cooldown arc
+    if (player.cd > 0) {
+      const prog = 1 - player.cd / SLAP_CD;
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.r + 9, -Math.PI / 2, -Math.PI / 2 + prog * TAU);
+      ctx.stroke();
+    }
+
+    // floating text
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '800 22px system-ui, sans-serif';
+    for (const f of floaters) {
+      ctx.globalAlpha = Math.min(1, f.life);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text, f.x, f.y);
+    }
+    ctx.globalAlpha = 1;
+
+    // damage flash
+    if (G.flash > 0) {
+      ctx.fillStyle = 'rgba(255,40,40,' + (G.flash * 0.35) + ')';
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    // caught banner
+    if (G.phase === 'caught') {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#ff5a5a';
+      ctx.font = '800 64px system-ui, sans-serif';
+      ctx.fillText('CAUGHT!', W / 2, H / 2);
+    }
+  }
+
+  // ────────────────────────────── HUD ────────────────────────────────
+  function updateHUD() {
+    scoreEl.textContent = G.score;
+    livesEl.textContent = G.lives;
+    const b = G.raidActive ? G.breath : 1;
+    breathFill.style.width = (b * 100).toFixed(1) + '%';
+    breathFill.style.background = b < 0.3 ? '#ef4444' : b < 0.6 ? '#f59e0b' : '#22c55e';
+  }
+
+  // ────────────────────────────── Screens ────────────────────────────
+  function showStart() {
+    overlay.innerHTML = `
+      <h1>KABADDI RAID</h1>
+      <p>Cross the midline into <b>their half</b>, tag defenders with <b>SPACE</b>,
+         then sprint back to your half before your <b>breath runs out</b>.</p>
+      <p class="small">MOVE &nbsp;WASD / Arrow Keys &nbsp;·&nbsp; TAG &nbsp;Space &nbsp;·&nbsp; Touch: drag + TAG button</p>
+      <button id="startBtn">START RAID</button>`;
+    overlay.classList.add('show');
+    overlay.querySelector('#startBtn').onclick = startGame;
+  }
+
+  function showGameOver() {
+    overlay.innerHTML = `
+      <h1>RAID OVER</h1>
+      <p class="big">Final Score &nbsp;<b>${G.score}</b></p>
+      <button id="startBtn">PLAY AGAIN</button>`;
+    overlay.classList.add('show');
+    overlay.querySelector('#startBtn').onclick = startGame;
+  }
+
+  function startGame() {
+    initAudio();
+    G.phase = 'play';
+    G.score = 0;
+    G.lives = LIVES_START;
+    G.breath = 1;
+    G.raidActive = false;
+    G.tags = 0;
+    G.timer = 0;
+    G.flash = 0;
+    player.x = MID * 0.38;
+    player.y = H / 2;
+    player.cd = 0;
+    defenders = newDefenders();
+    particles = [];
+    floaters = [];
+    pointer.active = false;
+    overlay.classList.remove('show');
+    last = performance.now();
+  }
+
+  // ────────────────────────────── Input ──────────────────────────────
+  window.addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    keys[k] = true;
+    if (k === ' ') { e.preventDefault(); initAudio(); slap(); }
+    if (k.startsWith('arrow')) e.preventDefault();
+  });
+  window.addEventListener('keyup', e => {
+    keys[e.key.toLowerCase()] = false;
+  });
+  window.addEventListener('blur', () => {
+    for (const k in keys) keys[k] = false;
+    pointer.active = false;
+  });
+
+  function setPointerPos(e) {
+    const r = cvs.getBoundingClientRect();
+    pointer.x = (e.clientX - r.left) * (W / r.width);
+    pointer.y = (e.clientY - r.top) * (H / r.height);
+  }
+  cvs.addEventListener('pointerdown', e => {
+    initAudio();
+    cvs.setPointerCapture(e.pointerId);
+    pointer.active = true;
+    setPointerPos(e);
+  });
+  cvs.addEventListener('pointermove', e => {
+    if (pointer.active) setPointerPos(e);
+  });
+  cvs.addEventListener('pointerup', () => { pointer.active = false; });
+  cvs.addEventListener('pointercancel', () => { pointer.active = false; });
+
+  tagBtn.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    initAudio();
+    slap();
+  });
+
+  // ────────────────────────────── Loop ───────────────────────────────
+  let last = performance.now();
+  function loop(t) {
+    const dt = Math.min(0.05, (t - last) / 1000);
+    last = t;
+    update(dt);
+    render();
+    updateHUD();
+    requestAnimationFrame(loop);
+  }
+
+  // ────────────────────────────── Boot ───────────────────────────────
+  defenders = newDefenders();
+  showStart();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
