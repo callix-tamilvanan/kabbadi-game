@@ -100,7 +100,7 @@
 <div class="app">
   <div class="hud">
     <div class="pill">SCORE <b id="score">0</b></div>
-    <div class="pill">LIVES <b id="lives">3</b></div>
+    <div class="pill">RAID POINTS <b id="raidPts">0</b></div>
     <div class="breathWrap">
       <span class="breathLabel">BREATH</span>
       <div class="breathBar"><div id="breathFill"></div></div>
@@ -118,7 +118,6 @@
 (() => {
   "use strict";
 
-  // ────────────────────────────── Setup ──────────────────────────────
   const cvs = document.getElementById('game');
   const ctx = cvs.getContext('2d');
   const W = 900, H = 520;
@@ -129,47 +128,47 @@
   const PAD   = 26;
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
-  // Tunables — tweak these to change difficulty
+  // Tunables
   const RAID_TIME   = 10;    // seconds of breath per raid
   const P_SPEED     = 252;   // player speed px/s
   const SLAP_RANGE  = 52;    // tag reach
   const SLAP_CD     = 0.45;  // seconds between tags
   const DEF_MIN_X   = MID + 45; // defenders never come closer to the midline
-  const LIVES_START = 3;
 
   const scoreEl    = document.getElementById('score');
-  const livesEl    = document.getElementById('lives');
+  const raidPtsEl  = document.getElementById('raidPts');
   const breathFill = document.getElementById('breathFill');
   const overlay    = document.getElementById('overlay');
   const tagBtn     = document.getElementById('tagBtn');
 
-  // ────────────────────────────── State ──────────────────────────────
   const keys    = {};
   const pointer = { active: false, x: 0, y: 0 };
 
-  let particles = [];  // expanding rings
-  let floaters  = [];  // floating score text
+  let particles = [];
+  let floaters  = [];
   let defenders = [];
 
   const G = {
     phase: 'idle',      // idle | play | caught | over
     score: 0,
-    lives: LIVES_START,
+    raidPts: 0,
     breath: 1,
     raidActive: false,
-    tags: 0,
     timer: 0,
     flash: 0,
   };
 
   const player = { x: MID * 0.38, y: H / 2, r: 15, cd: 0 };
 
+  // Defender spots and Names
   const SPOTS = [[620,120],[770,250],[620,400],[815,150],[815,380]];
+  const NAMES = ["D1", "D2", "D3", "D4", "D5"];
+  
   const newDefenders = () => SPOTS.map(([x, y], i) => ({
-    x, y, r: 15, alive: true, speed: 150 + i * 5
+    x, y, r: 15, alive: true, speed: 150 + i * 5, name: NAMES[i]
   }));
 
-  // ────────────────────────────── Audio ──────────────────────────────
+  // Audio
   let actx = null;
   function initAudio() {
     if (!actx) {
@@ -193,33 +192,54 @@
     } catch (e) {}
   }
 
-  // ────────────────────────────── Helpers ────────────────────────────
   const addFloat = (text, x, y, color) =>
     floaters.push({ text, x, y, color, life: 1.2 });
 
   function caught() {
     G.phase = 'caught';
-    G.timer = 1.2;
-    G.lives--;
+    G.timer = 1.5;
     G.raidActive = false;
     G.flash = 1;
     beep(110, 0.32, 'sawtooth', 0.08);
+
+    // REVIVAL LOGIC: Revive one defender if any are out
+    const outDefenders = defenders.filter(d => !d.alive);
+    if (outDefenders.length > 0) {
+      // Find the first dead defender and revive them
+      const revived = outDefenders[0];
+      revived.alive = true;
+      // Move revived defender back to a safe spot in their half
+      revived.x = 750;
+      revived.y = 260;
+      addFloat('REVIVED!', revived.x, revived.y - 30, '#4ade80');
+    }
   }
 
   function resetRaid(success) {
     if (success) {
-      const bonus = G.tags * 2;
+      const bonus = G.raidPts * 2;
       G.score += bonus;
-      if (bonus > 0) addFloat('+' + bonus + ' BONUS', player.x, player.y - 40, '#4ade80');
+      if (bonus > 0) addFloat('+' + bonus + ' RAID PTS', player.x, player.y - 40, '#4ade80');
+      
+      // Check for ALL OUT
+      if (defenders.every(d => !d.alive)) {
+        G.score += 10;
+        addFloat('ALL OUT! +10', player.x, player.y - 70, '#fbbf24');
+        beep(980, 0.3, 'triangle', 0.08);
+      }
       beep(660, 0.12, 'triangle', 0.05);
     }
+    
+    // Reset round state
     G.raidActive = false;
     G.breath = 1;
-    G.tags = 0;
+    G.raidPts = 0;
     G.timer = 0;
     player.x = MID * 0.38;
     player.y = H / 2;
     player.cd = 0;
+    
+    // Reset all defenders for the new raid
     defenders = newDefenders();
     particles = [];
     G.phase = 'play';
@@ -236,28 +256,20 @@
       if (Math.hypot(player.x - d.x, player.y - d.y) <= SLAP_RANGE) {
         d.alive = false;
         hits++;
-        G.tags++;
-        G.score++;
+        G.raidPts++;
         particles.push({ x: d.x, y: d.y, r: d.r, life: 1, big: true });
+        addFloat(d.name + ' OUT', d.x, d.y - 26, '#fca5a5');
       }
     }
 
     if (hits) {
       beep(780, 0.08, 'square', 0.05);
-      addFloat('+' + hits, player.x, player.y - 26, '#7dd3fc');
-      if (defenders.every(d => !d.alive)) {
-        G.score += 5;
-        addFloat('ALL OUT  +5', player.x, player.y - 56, '#fbbf24');
-        beep(980, 0.18, 'triangle', 0.06);
-      }
     } else {
       beep(300, 0.05, 'sine', 0.03);
     }
   }
 
-  // ────────────────────────────── Update ─────────────────────────────
   function update(dt) {
-    // effects always animate
     for (const p of particles) { p.r += dt * 95; p.life -= dt * 2.6; }
     particles = particles.filter(p => p.life > 0);
     for (const f of floaters) { f.y -= dt * 42; f.life -= dt * 0.85; }
@@ -269,14 +281,11 @@
 
     if (G.phase === 'caught') {
       G.timer -= dt;
-      if (G.timer <= 0) {
-        if (G.lives <= 0) { G.phase = 'over'; showGameOver(); }
-        else resetRaid(false);
-      }
+      if (G.timer <= 0) resetRaid(false);
       return;
     }
 
-    // ── player movement ──
+    // Player movement
     let dx = 0, dy = 0;
     if (keys['arrowleft']  || keys['a']) dx--;
     if (keys['arrowright'] || keys['d']) dx++;
@@ -299,21 +308,26 @@
     player.y = clamp(player.y, PAD + player.r, H - PAD - player.r);
     player.cd = Math.max(0, player.cd - dt);
 
-    // ── raid logic ──
+    // Raid Logic
     if (!G.raidActive) {
       if (player.x > MID) {
         G.raidActive = true;
         G.breath = 1;
-        G.tags = 0;
+        G.raidPts = 0;
         beep(520, 0.09, 'triangle', 0.04);
       }
     } else {
       G.breath -= dt / RAID_TIME;
       if (G.breath <= 0) { G.breath = 0; caught(); return; }
-      if (player.x < MID) { resetRaid(true); return; }
+      
+      // Safe return to own half
+      if (player.x < MID) { 
+        resetRaid(true); 
+        return; 
+      }
     }
 
-    // ── defenders ──
+    // Defender AI
     const boost = G.raidActive ? (1 - G.breath) * 95 : 0;
 
     for (const d of defenders) {
@@ -338,15 +352,12 @@
     }
   }
 
-  // ────────────────────────────── Render ─────────────────────────────
   function render() {
-    // halves
     ctx.fillStyle = '#123326';
     ctx.fillRect(0, 0, MID, H);
     ctx.fillStyle = '#3a1520';
     ctx.fillRect(MID, 0, MID, H);
 
-    // faint labels
     ctx.save();
     ctx.globalAlpha = 0.07;
     ctx.fillStyle = '#ffffff';
@@ -357,12 +368,10 @@
     ctx.fillText('THEIR HALF', MID + MID / 2, H / 2);
     ctx.restore();
 
-    // boundary
     ctx.strokeStyle = 'rgba(255,255,255,0.16)';
     ctx.lineWidth = 3;
     ctx.strokeRect(PAD, PAD, W - PAD * 2, H - PAD * 2);
 
-    // midline
     ctx.setLineDash([14, 12]);
     ctx.strokeStyle = 'rgba(255,255,255,0.35)';
     ctx.lineWidth = 3;
@@ -372,7 +381,6 @@
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // slap rings
     for (const p of particles) {
       ctx.strokeStyle = p.big
         ? 'rgba(255,120,120,' + p.life + ')'
@@ -383,7 +391,7 @@
       ctx.stroke();
     }
 
-    // defenders
+    // Defenders
     for (const d of defenders) {
       if (!d.alive) continue;
       ctx.save();
@@ -399,9 +407,16 @@
       ctx.beginPath();
       ctx.arc(d.x, d.y, d.r * 0.42, 0, TAU);
       ctx.fill();
+
+      // Draw Defender Name
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '700 12px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(d.name, d.x, d.y - d.r - 10);
     }
 
-    // player
+    // Player
     ctx.save();
     ctx.shadowColor = '#38bdf8';
     ctx.shadowBlur = 22;
@@ -417,7 +432,6 @@
     ctx.arc(player.x, player.y, player.r, 0, TAU);
     ctx.stroke();
 
-    // tag-cooldown arc
     if (player.cd > 0) {
       const prog = 1 - player.cd / SLAP_CD;
       ctx.strokeStyle = 'rgba(255,255,255,0.75)';
@@ -427,7 +441,6 @@
       ctx.stroke();
     }
 
-    // floating text
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '800 22px system-ui, sans-serif';
@@ -438,13 +451,11 @@
     }
     ctx.globalAlpha = 1;
 
-    // damage flash
     if (G.flash > 0) {
       ctx.fillStyle = 'rgba(255,40,40,' + (G.flash * 0.35) + ')';
       ctx.fillRect(0, 0, W, H);
     }
 
-    // caught banner
     if (G.phase === 'caught') {
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
       ctx.fillRect(0, 0, W, H);
@@ -454,32 +465,21 @@
     }
   }
 
-  // ────────────────────────────── HUD ────────────────────────────────
   function updateHUD() {
     scoreEl.textContent = G.score;
-    livesEl.textContent = G.lives;
+    raidPtsEl.textContent = G.raidPts;
     const b = G.raidActive ? G.breath : 1;
     breathFill.style.width = (b * 100).toFixed(1) + '%';
     breathFill.style.background = b < 0.3 ? '#ef4444' : b < 0.6 ? '#f59e0b' : '#22c55e';
   }
 
-  // ────────────────────────────── Screens ────────────────────────────
   function showStart() {
     overlay.innerHTML = `
       <h1>KABADDI RAID</h1>
-      <p>Cross the midline into <b>their half</b>, tag defenders with <b>SPACE</b>,
-         then sprint back to your half before your <b>breath runs out</b>.</p>
+      <p>Tag all 5 defenders and return safely to score!<br>
+         If you get caught, a defender comes back to life.</p>
       <p class="small">MOVE &nbsp;WASD / Arrow Keys &nbsp;·&nbsp; TAG &nbsp;Space &nbsp;·&nbsp; Touch: drag + TAG button</p>
       <button id="startBtn">START RAID</button>`;
-    overlay.classList.add('show');
-    overlay.querySelector('#startBtn').onclick = startGame;
-  }
-
-  function showGameOver() {
-    overlay.innerHTML = `
-      <h1>RAID OVER</h1>
-      <p class="big">Final Score &nbsp;<b>${G.score}</b></p>
-      <button id="startBtn">PLAY AGAIN</button>`;
     overlay.classList.add('show');
     overlay.querySelector('#startBtn').onclick = startGame;
   }
@@ -488,10 +488,9 @@
     initAudio();
     G.phase = 'play';
     G.score = 0;
-    G.lives = LIVES_START;
+    G.raidPts = 0;
     G.breath = 1;
     G.raidActive = false;
-    G.tags = 0;
     G.timer = 0;
     G.flash = 0;
     player.x = MID * 0.38;
@@ -505,7 +504,6 @@
     last = performance.now();
   }
 
-  // ────────────────────────────── Input ──────────────────────────────
   window.addEventListener('keydown', e => {
     const k = e.key.toLowerCase();
     keys[k] = true;
@@ -543,7 +541,6 @@
     slap();
   });
 
-  // ────────────────────────────── Loop ───────────────────────────────
   let last = performance.now();
   function loop(t) {
     const dt = Math.min(0.05, (t - last) / 1000);
@@ -554,7 +551,6 @@
     requestAnimationFrame(loop);
   }
 
-  // ────────────────────────────── Boot ───────────────────────────────
   defenders = newDefenders();
   showStart();
   requestAnimationFrame(loop);
