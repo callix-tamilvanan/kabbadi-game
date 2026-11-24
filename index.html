@@ -100,7 +100,7 @@
 <div class="app">
   <div class="hud">
     <div class="pill">SCORE <b id="score">0</b></div>
-    <div class="pill">RAID POINTS <b id="raidPts">0</b></div>
+    <div class="pill">DEFENDERS LEFT <b id="defLeft">5</b></div>
     <div class="breathWrap">
       <span class="breathLabel">BREATH</span>
       <div class="breathBar"><div id="breathFill"></div></div>
@@ -129,14 +129,14 @@
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
   // Tunables
-  const RAID_TIME   = 10;    // seconds of breath per raid
-  const P_SPEED     = 252;   // player speed px/s
-  const SLAP_RANGE  = 52;    // tag reach
-  const SLAP_CD     = 0.45;  // seconds between tags
-  const DEF_MIN_X   = MID + 45; // defenders never come closer to the midline
+  const RAID_TIME   = 10;    
+  const P_SPEED     = 252;   
+  const SLAP_RANGE  = 52;    
+  const SLAP_CD     = 0.45;  
+  const DEF_MIN_X   = MID + 45; 
 
   const scoreEl    = document.getElementById('score');
-  const raidPtsEl  = document.getElementById('raidPts');
+  const defLeftEl  = document.getElementById('defLeft');
   const breathFill = document.getElementById('breathFill');
   const overlay    = document.getElementById('overlay');
   const tagBtn     = document.getElementById('tagBtn');
@@ -151,7 +151,6 @@
   const G = {
     phase: 'idle',      // idle | play | caught | over
     score: 0,
-    raidPts: 0,
     breath: 1,
     raidActive: false,
     timer: 0,
@@ -202,45 +201,58 @@
     G.flash = 1;
     beep(110, 0.32, 'sawtooth', 0.08);
 
-    // REVIVAL LOGIC: Revive one defender if any are out
+    // REVIVAL LOGIC: If you get caught, revive ONE out defender
     const outDefenders = defenders.filter(d => !d.alive);
     if (outDefenders.length > 0) {
-      // Find the first dead defender and revive them
       const revived = outDefenders[0];
       revived.alive = true;
-      // Move revived defender back to a safe spot in their half
-      revived.x = 750;
+      revived.x = 750; // Put them back on their side
       revived.y = 260;
-      addFloat('REVIVED!', revived.x, revived.y - 30, '#4ade80');
+      addFloat(revived.name + ' REVIVED', revived.x, revived.y - 30, '#4ade80');
     }
   }
 
   function resetRaid(success) {
     if (success) {
-      const bonus = G.raidPts * 2;
-      G.score += bonus;
-      if (bonus > 0) addFloat('+' + bonus + ' RAID PTS', player.x, player.y - 40, '#4ade80');
+      const tags = defenders.filter(d => !d.alive).length; 
+      if (tags > 0) {
+        G.score += tags;
+        addFloat('+' + tags + ' PTS', player.x, player.y - 40, '#4ade80');
+      }
       
       // Check for ALL OUT
       if (defenders.every(d => !d.alive)) {
         G.score += 10;
         addFloat('ALL OUT! +10', player.x, player.y - 70, '#fbbf24');
         beep(980, 0.3, 'triangle', 0.08);
+        
+        // Match over
+        G.phase = 'over';
+        showGameOver();
+        return;
       }
       beep(660, 0.12, 'triangle', 0.05);
     }
     
-    // Reset round state
+    // Reset round state, BUT keep defenders' alive status!
     G.raidActive = false;
     G.breath = 1;
-    G.raidPts = 0;
     G.timer = 0;
     player.x = MID * 0.38;
     player.y = H / 2;
     player.cd = 0;
     
-    // Reset all defenders for the new raid
-    defenders = newDefenders();
+    // Only reset positions of ALIVE defenders
+    let spotIndex = 0;
+    for (let d of defenders) {
+      if (d.alive) {
+        // Find a valid spot to put them back
+        d.x = SPOTS[spotIndex][0];
+        d.y = SPOTS[spotIndex][1];
+        spotIndex++;
+      }
+    }
+    
     particles = [];
     G.phase = 'play';
   }
@@ -256,7 +268,6 @@
       if (Math.hypot(player.x - d.x, player.y - d.y) <= SLAP_RANGE) {
         d.alive = false;
         hits++;
-        G.raidPts++;
         particles.push({ x: d.x, y: d.y, r: d.r, life: 1, big: true });
         addFloat(d.name + ' OUT', d.x, d.y - 26, '#fca5a5');
       }
@@ -313,7 +324,6 @@
       if (player.x > MID) {
         G.raidActive = true;
         G.breath = 1;
-        G.raidPts = 0;
         beep(520, 0.09, 'triangle', 0.04);
       }
     } else {
@@ -467,7 +477,7 @@
 
   function updateHUD() {
     scoreEl.textContent = G.score;
-    raidPtsEl.textContent = G.raidPts;
+    defLeftEl.textContent = defenders.filter(d => d.alive).length;
     const b = G.raidActive ? G.breath : 1;
     breathFill.style.width = (b * 100).toFixed(1) + '%';
     breathFill.style.background = b < 0.3 ? '#ef4444' : b < 0.6 ? '#f59e0b' : '#22c55e';
@@ -475,11 +485,20 @@
 
   function showStart() {
     overlay.innerHTML = `
-      <h1>KABADDI RAID</h1>
-      <p>Tag all 5 defenders and return safely to score!<br>
-         If you get caught, a defender comes back to life.</p>
+      <h1>KABADDI MATCH</h1>
+      <p>Knock out all 5 defenders from the mat.<br>
+         If you get caught, one defender returns!</p>
       <p class="small">MOVE &nbsp;WASD / Arrow Keys &nbsp;·&nbsp; TAG &nbsp;Space &nbsp;·&nbsp; Touch: drag + TAG button</p>
-      <button id="startBtn">START RAID</button>`;
+      <button id="startBtn">START MATCH</button>`;
+    overlay.classList.add('show');
+    overlay.querySelector('#startBtn').onclick = startGame;
+  }
+
+  function showGameOver() {
+    overlay.innerHTML = `
+      <h1>ALL OUT!</h1>
+      <p class="big">You cleared the mat! Final Score: <b>${G.score}</b></p>
+      <button id="startBtn">PLAY AGAIN</button>`;
     overlay.classList.add('show');
     overlay.querySelector('#startBtn').onclick = startGame;
   }
@@ -488,7 +507,6 @@
     initAudio();
     G.phase = 'play';
     G.score = 0;
-    G.raidPts = 0;
     G.breath = 1;
     G.raidActive = false;
     G.timer = 0;
